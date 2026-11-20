@@ -1,0 +1,184 @@
+#include <Servo.h>
+
+Servo curtain;
+Servo tiger;
+Servo scribX;
+Servo scribY;
+
+// Pins
+const int curtainPin = 2;
+const int tigerPin = 3;
+const int scribXPin = 4;
+const int scribYPin = 5;
+const int startPin = 6;       // from Nano D7 (through divider)
+const int donePin = 8;        // to Nano D8
+const int paperEn = 10;       // L298 ENB
+const int paperIn3 = 11;
+const int paperIn4 = 12;
+
+// Positions
+const int curtainClosed = 180;
+const int curtainOpen = 0;
+const int tigerBack = 85;
+const int tigerForward = 145;
+
+// Timing
+const int slowStepDelay = 30;               // ms per degree, tiger retreat
+const int growlLength = 3000;               // ms
+const unsigned long bellTime = 5000;        // ms, Nano stepper down + bell + up
+const unsigned long fastTime = 1500;        // ms at fast speed (straight line)
+const unsigned long scribbleTotal = 10000;  // ms total, fast burst + scribble
+const unsigned long finalPaperTime = 10000; // ms total, final paper run with track 3
+
+const int paperFastSpeed = 255;             // first: fast
+const int paperSlowSpeed = 70;              // then: slow
+
+// Scribble settings
+const int minX = 20,  maxX = 180;           // left and right
+const int minY = 70,  maxY = 110;           // up and down
+const int parkX = 100, parkY = 90;          // rest position
+
+int posX = parkX, targetX = parkX;
+int easingX = 5;
+unsigned long delayX = 50, lastX = 0;
+
+int posY = parkY, targetY = parkY;
+int easingY = 8;
+unsigned long delayY = 70, lastY = 0;
+
+void sendCommand(byte cmd, byte dat1, byte dat2) {
+  Serial1.write(0x7E); Serial1.write(0xFF); Serial1.write(0x06);
+  Serial1.write(cmd);  Serial1.write((byte)0x00);
+  Serial1.write(dat1); Serial1.write(dat2); Serial1.write(0xEF);
+}
+
+void playTrack(int track) { sendCommand(0x03, (byte)0x00, track); }
+void setVolume(int vol)   { sendCommand(0x06, (byte)0x00, vol); }
+
+void tigerRetreat() {
+  for (int pos = tigerForward; pos >= tigerBack; pos--) {
+    tiger.write(pos);
+    delay(slowStepDelay);
+  }
+}
+
+// Curtain opens, tiger leans and plays the given track, retreats, curtain closes
+void tigerShow(int track) {
+  curtain.write(curtainOpen);
+  delay(1000);                  // beat of anticipation
+  tiger.write(tigerForward);    // fast lunge
+  delay(300);                   // sound slightly lagging
+  playTrack(track);
+  delay(growlLength);
+  tigerRetreat();               // slow back in
+  curtain.write(curtainClosed);
+  delay(1000);
+}
+
+void paperStart(int speed) {
+  digitalWrite(paperIn3, LOW);   // direction (swapped to match your motor)
+  digitalWrite(paperIn4, HIGH);
+  analogWrite(paperEn, speed);
+}
+
+void paperStop() {
+  analogWrite(paperEn, 0);
+  digitalWrite(paperIn3, LOW);
+  digitalWrite(paperIn4, LOW);
+}
+
+void scribbleRun() {
+  // Fast burst: pen holds still and draws a straight line
+  scribX.write(parkX);
+  scribY.write(parkY);
+  paperStart(paperFastSpeed);
+  delay(fastTime);
+
+  // Then slow, while the pen scribbles
+  analogWrite(paperEn, paperSlowSpeed);
+  unsigned long start = millis();
+  while (millis() - start < scribbleTotal - fastTime) {
+    unsigned long now = millis();
+
+    if (now - lastX >= delayX) {
+      lastX = now;
+      if (posX == targetX) targetX = random(minX, maxX + 1);
+      if (posX < targetX) posX = min(posX + easingX, targetX);
+      else                posX = max(posX - easingX, targetX);
+      scribX.write(posX);
+    }
+
+    if (now - lastY >= delayY) {
+      lastY = now;
+      if (posY == targetY) targetY = random(minY, maxY + 1);
+      if (posY < targetY) posY = min(posY + easingY, targetY);
+      else                posY = max(posY - easingY, targetY);
+      scribY.write(posY);
+    }
+  }
+
+  // Stop motor and pen together
+  paperStop();
+  posX = targetX = parkX;
+  posY = targetY = parkY;
+  scribX.write(parkX);
+  scribY.write(parkY);
+}
+
+const unsigned long finalSlowTime = 1000;   // ms slow, to get up to speed
+// finalPaperTime (10000) is the total, so fast runs for the remaining 9 s
+
+// Final: track 3 plays while the paper motor starts slow, then runs fast, 10 s total
+void finalRun() {
+  playTrack(3);
+  paperStart(paperSlowSpeed);
+  delay(finalSlowTime);
+  analogWrite(paperEn, paperFastSpeed);
+  delay(finalPaperTime - finalSlowTime);
+  paperStop();
+}
+
+void setup() {
+  pinMode(startPin, INPUT_PULLDOWN);
+  pinMode(donePin, OUTPUT);
+  digitalWrite(donePin, LOW);
+
+  pinMode(paperEn, OUTPUT);
+  pinMode(paperIn3, OUTPUT);
+  pinMode(paperIn4, OUTPUT);
+  paperStop();
+
+  Serial1.begin(9600);
+  curtain.attach(curtainPin, 500, 2500);
+  tiger.attach(tigerPin, 500, 2500);
+  scribX.attach(scribXPin);
+  scribY.attach(scribYPin);
+
+  curtain.write(curtainClosed);
+  tiger.write(tigerBack);
+  scribX.write(parkX);
+  scribY.write(parkY);
+
+  randomSeed(analogRead(A0));
+  delay(5000);       // let the MP3 module boot and the Nano settle
+  setVolume(25);
+}
+
+void loop() {
+  if (digitalRead(startPin) == HIGH) {
+    tigerShow(1);                        // curtain, tiger, growl (track 1)
+    digitalWrite(donePin, HIGH);         // tell Nano: intro done, start the bell
+    delay(500);
+    digitalWrite(donePin, LOW);
+
+    delay(bellTime);                     // Nano runs stepper down, bell, stepper up
+
+    scribbleRun();                       // 255 fast, then 70 slow, 10 s total
+    tigerShow(2);                        // second curtain, tiger, track 2
+    finalRun();                          // track 3, paper 255 then 70, 10 s total
+
+    digitalWrite(donePin, HIGH);         // tell Nano: all finished
+    delay(500);
+    digitalWrite(donePin, LOW);
+  }
+}
