@@ -1,0 +1,86 @@
+const int dirPin = 4;
+const int stepPin = 5;
+const int stepperEnPin = 6;      // stepper driver EN (LOW = enabled)
+const int upperLimitPin = 3;
+const int fingerLimitPin = 2;
+const int handswitchPin = 12;
+const int motorEnPin = 9;
+const int motorIn1 = 10;
+const int motorIn2 = 11;
+const int potPin = A0;
+
+const int picoStartPin = 7;      // to Pico GP6 (through divider)
+const int picoDonePin = 8;       // from Pico GP8
+
+int motorSpeed = 4000;
+
+void stepMotor() {
+  digitalWrite(stepPin, HIGH);
+  delayMicroseconds(motorSpeed);
+  digitalWrite(stepPin, LOW);
+  delayMicroseconds(motorSpeed);
+}
+
+void goToUpperLimit() {
+  digitalWrite(dirPin, LOW);
+  while (digitalRead(upperLimitPin) == HIGH) stepMotor();
+  delay(200);
+}
+
+void goToFingerLimit() {
+  digitalWrite(dirPin, HIGH);
+  while (digitalRead(fingerLimitPin) == HIGH) stepMotor();
+  delay(200);
+}
+
+void runBell() {
+  int dcSpeed = map(analogRead(potPin), 0, 1023, 0, 255);
+  digitalWrite(motorIn1, HIGH);
+  digitalWrite(motorIn2, LOW);
+  analogWrite(motorEnPin, dcSpeed);
+  delay(1500);                       // bell run time
+  analogWrite(motorEnPin, 0);
+  digitalWrite(motorIn1, LOW);
+}
+
+void waitForPico(unsigned long timeoutMs) {
+  unsigned long t = millis();
+  while (digitalRead(picoDonePin) == LOW && millis() - t < timeoutMs) {}
+}
+
+void setup() {
+  pinMode(picoStartPin, OUTPUT);
+  digitalWrite(picoStartPin, LOW);   // first, before anything else
+
+  pinMode(picoDonePin, INPUT);
+  pinMode(dirPin, OUTPUT);
+  pinMode(stepPin, OUTPUT);
+  pinMode(stepperEnPin, OUTPUT);
+  digitalWrite(stepperEnPin, LOW);   // keep the stepper driver enabled
+  pinMode(upperLimitPin, INPUT_PULLUP);
+  pinMode(fingerLimitPin, INPUT_PULLUP);
+  pinMode(handswitchPin, INPUT_PULLUP);
+  pinMode(motorEnPin, OUTPUT);
+  pinMode(motorIn1, OUTPUT);
+  pinMode(motorIn2, OUTPUT);
+
+  delay(5000);                       // let the Pico finish booting
+  goToUpperLimit();
+}
+
+void loop() {
+  if (digitalRead(handswitchPin) == LOW) {
+    delay(50);  // debounce
+
+    digitalWrite(picoStartPin, HIGH);   // Pico: curtain, tiger, growl
+    waitForPico(20000);                 // wait for the intro to finish
+    digitalWrite(picoStartPin, LOW);
+
+    goToFingerLimit();                  // fingers down
+    runBell();                          // bell rings
+    goToUpperLimit();                   // fingers up
+
+    waitForPico(80000);                 // Pico finishes everything else
+    delay(1000);
+  }
+}
